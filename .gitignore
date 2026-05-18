@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Data artifacts
+data/market.db
+data/market.db-*
+data/faiss_index/
+data/reports/
+data/csv/
+data/knowledge_base/*
+!data/knowledge_base/SOURCES.md
+
+# IDE
+.vscode/
+.idea/
+*.swp

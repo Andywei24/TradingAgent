@@ -1,0 +1,42 @@
+# Trading Agent — runtime + dev dependencies
+# Install with: pip install -r requirements.txt
+
+# --- Core data / numerics ---
+numpy>=1.26
+pandas>=2.1
+scipy>=1.11
+
+# --- Database ---
+SQLAlchemy>=2.0
+
+# --- ML / statistics / forecasting ---
+scikit-learn>=1.4
+statsmodels>=0.14
+
+# --- Market data ingest (Alpha Vantage) ---
+httpx>=0.27
+tenacity>=8.2
+
+# --- Config & CLI ---
+pydantic>=2.6
+pydantic-settings>=2.2
+typer>=0.12
+python-dotenv>=1.0
+
+# --- LLM client (Deepseek via OpenAI-compatible SDK) ---
+openai>=1.30
+
+# --- RAG: embeddings, vector store, document loaders ---
+sentence-transformers>=2.7
+faiss-cpu>=1.8
+pypdf>=4.2
+trafilatura>=1.10
+
+# --- Visualization ---
+matplotlib>=3.8
+mplfinance>=0.12.10b0
+plotly>=5.20
+
+# --- Testing ---
+pytest>=8.1
+pytest-httpx>=0.30

@@ -1,0 +1,56 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tradeagent"
+version = "0.1.0"
+description = "Reasoning trading-research agent over a SQL market-data store, with Alpha Vantage ingest, linear forecasting, and a financial-knowledge RAG."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "Andy Wei", email = "andywei0204@gmail.com" }]
+license = { text = "MIT" }
+dependencies = [
+    "numpy>=1.26",
+    "pandas>=2.1",
+    "scipy>=1.11",
+    "SQLAlchemy>=2.0",
+    "scikit-learn>=1.4",
+    "statsmodels>=0.14",
+    "httpx>=0.27",
+    "tenacity>=8.2",
+    "pydantic>=2.6",
+    "pydantic-settings>=2.2",
+    "typer>=0.12",
+    "python-dotenv>=1.0",
+    "openai>=1.30",
+    "sentence-transformers>=2.7",
+    "faiss-cpu>=1.8",
+    "pypdf>=4.2",
+    "trafilatura>=1.10",
+    "matplotlib>=3.8",
+    "mplfinance>=0.12.10b0",
+    "plotly>=5.20",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.1",
+    "pytest-httpx>=0.30",
+    "ruff>=0.4",
+]
+
+[project.scripts]
+tradeagent = "tradeagent.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["tradeagent*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
