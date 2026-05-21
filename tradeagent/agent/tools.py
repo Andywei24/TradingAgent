@@ -6,10 +6,13 @@ from contextvars import ContextVar
 from dataclasses import asdict
 from datetime import datetime
 from typing import Any, Callable
+from urllib.parse import urlparse
 
+import httpx
 import pandas as pd
 from pydantic import BaseModel, Field
 
+from tradeagent.config import get_settings
 from tradeagent.data.queries import (
     get_bars,
     get_feature,
@@ -104,6 +107,13 @@ class DecomposeSignalInput(BaseModel):
 class RetrieveKnowledgeInput(BaseModel):
     query: str
     k: int = Field(default=5, ge=1, le=20)
+
+
+class SearchMarketNewsInput(BaseModel):
+    query: str = Field(description="Natural-language news query")
+    symbol: str | None = Field(default=None, description="Optional ticker symbol to focus the search")
+    days: int | None = Field(default=None, ge=1, le=30)
+    max_results: int | None = Field(default=None, ge=1, le=10)
 
 
 class PlotChartInput(BaseModel):
@@ -221,6 +231,70 @@ def _tool_retrieve_knowledge(inp: RetrieveKnowledgeInput) -> dict:
     return {"query": inp.query, "hits": hits}
 
 
+def _source_from_url(url: str) -> str:
+    host = urlparse(url).netloc.lower()
+    return host[4:] if host.startswith("www.") else host
+
+
+def _tool_search_market_news(inp: SearchMarketNewsInput) -> dict:
+    settings = get_settings()
+    if not settings.tavily_api_key:
+        return {
+            "error": "TAVILY_API_KEY is not configured; set it in .env to enable market news search.",
+            "news_unavailable": True,
+        }
+
+    days = inp.days or settings.tavily_news_days
+    max_results = inp.max_results or settings.tavily_max_results
+    query = inp.query.strip()
+    if inp.symbol:
+        query = f"{inp.symbol.upper()} stock market news {query}"
+
+    payload = {
+        "query": query,
+        "topic": "news",
+        "days": days,
+        "max_results": max_results,
+        "search_depth": "basic",
+        "include_answer": False,
+        "include_raw_content": False,
+    }
+    headers = {"Authorization": f"Bearer {settings.tavily_api_key}"}
+
+    try:
+        resp = httpx.post(settings.tavily_base_url, json=payload, headers=headers, timeout=20.0)
+        resp.raise_for_status()
+        data = resp.json()
+    except (httpx.HTTPError, ValueError) as e:
+        return {
+            "error": f"Tavily news search failed: {type(e).__name__}: {e}",
+            "news_unavailable": True,
+        }
+
+    results = []
+    for item in data.get("results", [])[:max_results]:
+        url = str(item.get("url") or "")
+        if not url:
+            continue
+        results.append(
+            {
+                "title": item.get("title") or "",
+                "url": url,
+                "source": _source_from_url(url),
+                "published_date": item.get("published_date") or item.get("publishedDate"),
+                "snippet": item.get("content") or "",
+                "score": item.get("score"),
+            }
+        )
+
+    return {
+        "query": data.get("query") or query,
+        "symbol": inp.symbol,
+        "days": days,
+        "results": results,
+    }
+
+
 def _tool_plot_chart(inp: PlotChartInput) -> dict:
     guard = _ensure_symbol_data(inp.symbol)
     if guard is not None:
@@ -279,6 +353,7 @@ REGISTRY: dict[str, Tool] = {
         Tool("run_linear_forecast", "Fit a ridge regression on engineered features and predict the horizon return; returns point, interval, direction, walk-forward R².", RunLinearForecastInput, _tool_run_linear_forecast),
         Tool("decompose_signal", "FFT-based spectral decomposition of recent prices; returns dominant period and trend slope.", DecomposeSignalInput, _tool_decompose_signal),
         Tool("retrieve_knowledge", "Retrieve top-k snippets from the financial knowledge RAG store.", RetrieveKnowledgeInput, _tool_retrieve_knowledge),
+        Tool("search_market_news", "Search recent market/news web results for a ticker or financial question using Tavily; returns titles, snippets, sources, URLs, and dates.", SearchMarketNewsInput, _tool_search_market_news),
         Tool("plot_chart", "Render a price chart with indicator overlays to PNG and return the path.", PlotChartInput, _tool_plot_chart),
         Tool("summarize_statistics", "Mean/std/skew/Sharpe over a recent window for a symbol.", SummarizeStatisticsInput, _tool_summarize_statistics),
     ]

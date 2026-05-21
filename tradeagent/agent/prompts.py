@@ -12,6 +12,8 @@ Rules:
 - 1 to 5 sub-goals.
 - Prefer cheap data tools (get_price_history, summarize_statistics) before forecast/RAG.
 - Always include `retrieve_knowledge` if the question involves a financial concept or interpretation.
+- Include `search_market_news` for stock analysis, forecast, overbought/oversold, "latest",
+  "current", market-moving, or "why is it moving" questions.
 - Output ONLY the JSON object, no commentary.
 """
 
@@ -39,6 +41,9 @@ Requirements:
   ingest GOOG`"). Do NOT fabricate prices, statistics, or forecasts under any
   circumstances. An honest "I don't have the data" is required over an invented answer.
 - Cite RAG snippets by source (e.g. "[Investopedia: RSI]") whenever you rely on them.
+- Cite web/news results by source or title when you rely on them. If news search is
+  unavailable, say that recent web news was unavailable and continue with the remaining
+  evidence. Do NOT invent headlines, dates, sources, or URLs.
 - When you reference a forecast, include the point estimate, the [low, high] band, and the
   walk-forward R² as a confidence anchor.
 - If a forecast chart was produced, refer to it in prose (e.g. "see the forecast chart

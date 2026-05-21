@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import httpx
 import numpy as np
 
 from tradeagent.agent.tools import REGISTRY
@@ -129,3 +131,70 @@ def test_auto_ingest_fetches_missing_symbol(httpx_mock):
 
     assert "rows" in out and len(out["rows"]) == 2
     assert "missing_data" not in out
+
+
+def test_search_market_news_returns_normalized_results(httpx_mock):
+    httpx_mock.add_response(
+        json={
+            "query": "GOOG stock market news earnings",
+            "results": [
+                {
+                    "title": "Alphabet shares move after earnings",
+                    "url": "https://www.reuters.com/markets/alphabet-earnings",
+                    "content": "Alphabet shares moved after the company reported earnings.",
+                    "score": 0.91,
+                    "published_date": "2026-05-20",
+                }
+            ],
+        }
+    )
+
+    out = REGISTRY["search_market_news"].call(
+        {"symbol": "GOOG", "query": "earnings", "days": 7, "max_results": 3}
+    )
+
+    assert out["symbol"] == "GOOG"
+    assert out["days"] == 7
+    assert out["results"][0] == {
+        "title": "Alphabet shares move after earnings",
+        "url": "https://www.reuters.com/markets/alphabet-earnings",
+        "source": "reuters.com",
+        "published_date": "2026-05-20",
+        "snippet": "Alphabet shares moved after the company reported earnings.",
+        "score": 0.91,
+    }
+    req = httpx_mock.get_requests()[0]
+    assert req.headers["authorization"] == "Bearer test-tavily-key"
+    assert req.url == httpx.URL("https://api.tavily.com/search")
+
+
+def test_search_market_news_uses_news_defaults(httpx_mock):
+    httpx_mock.add_response(json={"query": "MSFT stock market news outlook", "results": []})
+
+    REGISTRY["search_market_news"].call({"symbol": "MSFT", "query": "outlook"})
+
+    payload = json.loads(httpx_mock.get_requests()[0].read().decode())
+    assert payload["topic"] == "news"
+    assert payload["days"] == 7
+    assert payload["max_results"] == 5
+    assert payload["include_raw_content"] is False
+
+
+def test_search_market_news_missing_key_is_nonfatal(monkeypatch):
+    monkeypatch.setenv("TAVILY_API_KEY", "")
+    from tradeagent import config
+
+    config.get_settings.cache_clear()
+
+    out = REGISTRY["search_market_news"].call({"symbol": "GOOG", "query": "earnings"})
+    assert out["news_unavailable"] is True
+    assert "TAVILY_API_KEY" in out["error"]
+
+
+def test_search_market_news_http_error_is_nonfatal(httpx_mock):
+    httpx_mock.add_response(status_code=500, json={"error": "temporary"})
+
+    out = REGISTRY["search_market_news"].call({"symbol": "GOOG", "query": "earnings"})
+
+    assert out["news_unavailable"] is True
+    assert "Tavily news search failed" in out["error"]

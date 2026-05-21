@@ -16,6 +16,9 @@ def isolated_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("ALPHAVANTAGE_API_KEY", "test-key")
     monkeypatch.setenv("ALPHAVANTAGE_RATE_LIMIT_PER_MIN", "60")
     monkeypatch.setenv("ALPHAVANTAGE_PREMIUM", "false")
+    monkeypatch.setenv("TAVILY_API_KEY", "test-tavily-key")
+    monkeypatch.setenv("TAVILY_NEWS_DAYS", "7")
+    monkeypatch.setenv("TAVILY_MAX_RESULTS", "5")
     # Pin LLM settings so tests don't depend on the developer's real .env.
     monkeypatch.setenv("LLM_PROVIDER", "deepseek")
     monkeypatch.setenv("DEEPSEEK_MODEL", "deepseek-chat")

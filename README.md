@@ -16,7 +16,8 @@ pip install -e .
 # 2. Configure
 Copy-Item .env.example .env
 # Edit .env: set ALPHAVANTAGE_API_KEY, pick LLM_PROVIDER (deepseek|openai),
-# and set the matching key (DEEPSEEK_API_KEY or OPENAI_API_KEY)
+# set the matching key (DEEPSEEK_API_KEY or OPENAI_API_KEY), and optionally
+# set TAVILY_API_KEY for recent market/news search.
 
 # 3. Ingest NASDAQ price history (free tier: 5 req/min, 25/day — pin to a small list)
 tradeagent ingest AAPL MSFT NVDA --interval 1d
@@ -29,6 +30,7 @@ tradeagent features build
 tradeagent rag index data/knowledge_base
 
 # 6. Ask (uses LLM_PROVIDER from .env; override per-call with --provider)
+# Analysis questions automatically include recent Tavily news when TAVILY_API_KEY is set.
 tradeagent ask "Is NVDA overbought right now, and what's a sensible 5-day forecast?"
 tradeagent ask "Compare AAPL vs MSFT momentum" --provider openai
 
@@ -68,6 +70,10 @@ The agent talks to any OpenAI-compatible chat-completions endpoint. Two provider
 | `openai` | `OPENAI_API_KEY` | `gpt-4o-mini` | `https://api.openai.com/v1` |
 
 Set the default with `LLM_PROVIDER` in `.env`, or override per call with `tradeagent ask "..." --provider openai`. Programmatically: `run_chain(query, provider="openai")` or `make_llm_client("openai", model="gpt-4o")`. Add a third provider by extending `_provider_config` in `tradeagent/agent/llm.py`.
+
+## News search
+
+Set `TAVILY_API_KEY` to let the agent search recent market/news results during analysis-style questions. Defaults are `TAVILY_NEWS_DAYS=7` and `TAVILY_MAX_RESULTS=5`. If Tavily is not configured or unavailable, the agent continues with local SQL, indicators, forecasts, and RAG evidence instead of failing the run.
 
 ## Notes
 

@@ -27,6 +27,7 @@ SYMBOL_SCOPED_TOOLS = {
     "run_linear_forecast",
     "decompose_signal",
     "plot_chart",
+    "search_market_news",
     "summarize_statistics",
 }
 SYMBOL_STOPWORDS = {
@@ -99,10 +100,54 @@ def _needs_momentum_indicators(query: str) -> bool:
     return "overbought" in q or "oversold" in q
 
 
+def _needs_market_news(query: str) -> bool:
+    q = query.lower()
+    terms = (
+        "analysis",
+        "analyze",
+        "current",
+        "forecast",
+        "latest",
+        "market-moving",
+        "moving",
+        "news",
+        "outlook",
+        "overbought",
+        "oversold",
+        "stock",
+        "why",
+    )
+    return any(term in q for term in terms)
+
+
 def _normalize_plan(query: str, plan: dict, requested_symbol: str | None) -> dict:
     subgoals = plan.get("subgoals")
     if not isinstance(subgoals, list):
         return {"subgoals": [{"id": 1, "goal": query, "tools": list(REGISTRY)}]}
+
+    has_dedicated_news_goal = any(
+        (sg.get("tools") or []) == ["search_market_news"] for sg in subgoals if isinstance(sg, dict)
+    )
+    if _needs_market_news(query) and requested_symbol and not has_dedicated_news_goal:
+        for sg in subgoals:
+            if not isinstance(sg, dict):
+                continue
+            tools = sg.get("tools") or []
+            if len(tools) > 1 and "search_market_news" in tools:
+                sg["tools"] = [tool for tool in tools if tool != "search_market_news"]
+        news_goal = {
+            "goal": f"Search recent market news for {requested_symbol} relevant to the user's question",
+            "tools": ["search_market_news"],
+        }
+        insert_at = next(
+            (
+                i + 1
+                for i, sg in enumerate(subgoals)
+                if isinstance(sg, dict) and "get_price_history" in (sg.get("tools") or [])
+            ),
+            1,
+        )
+        subgoals.insert(min(insert_at, len(subgoals)), news_goal)
 
     has_indicator_goal = any("compute_indicator" in (sg.get("tools") or []) for sg in subgoals if isinstance(sg, dict))
     if _needs_momentum_indicators(query) and requested_symbol and not has_indicator_goal:
@@ -196,6 +241,19 @@ def _execute_subgoal(
     charts: list[str],
     requested_symbol: str | None,
 ) -> str:
+    if tool_names == ["search_market_news"] and requested_symbol:
+        args = {"symbol": requested_symbol, "query": goal}
+        result = REGISTRY["search_market_news"].call(args)
+        entry: dict = {
+            "tool": "search_market_news",
+            "args": json.dumps(args),
+            "result_keys": list(result.keys()),
+        }
+        trace.append(entry)
+        if result.get("news_unavailable"):
+            return f"Recent market news unavailable for {requested_symbol}: {result.get('error')}"
+        return _summarize_news_results(requested_symbol, result)
+
     tools = tool_schemas([n for n in tool_names if n in REGISTRY] or None)
     messages: list[dict] = [
         {"role": "system", "content": EXECUTOR_SYSTEM.format(goal=goal)},
@@ -223,6 +281,27 @@ def _execute_subgoal(
             return msg.content or ""
         messages.extend(_dispatch_tool_calls(msg.tool_calls, trace, charts, requested_symbol))
     return "[executor stopped after max iterations]"
+
+
+def _summarize_news_results(symbol: str, result: dict) -> str:
+    results = result.get("results") or []
+    if not results:
+        return f"Recent market news search returned no results for {symbol}."
+
+    lines = [f"Retrieved {len(results)} recent market news result(s) for {symbol}:"]
+    for i, item in enumerate(results[:5], start=1):
+        title = item.get("title") or "Untitled"
+        source = item.get("source") or "unknown source"
+        published = item.get("published_date") or "date unavailable"
+        snippet = (item.get("snippet") or "").strip()
+        url = item.get("url") or ""
+        line = f"{i}. {title} ({source}, {published})"
+        if snippet:
+            line += f": {snippet}"
+        if url:
+            line += f" [{url}]"
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def _synthesize(
@@ -263,7 +342,17 @@ def _trace_has_missing_data(trace: list[dict]) -> bool:
 def _data_availability_note(trace: list[dict]) -> str:
     if _trace_has_missing_data(trace):
         return "One or more tools reported missing/insufficient data. Only mention ingestion for those specific symbols."
-    return "No tool reported missing or insufficient symbol data. Do not tell the user to run an ingest command."
+    has_news = False
+    for entry in trace:
+        if not isinstance(entry, dict) or entry.get("tool") != "search_market_news":
+            continue
+        keys = set(entry.get("result_keys") or [])
+        if "news_unavailable" in keys:
+            return "Recent web news was unavailable. Do not invent headlines."
+        if "results" in keys:
+            has_news = True
+    news_note = " Recent web news was retrieved; use the news subgoal summary and do not say it was unavailable." if has_news else ""
+    return "No tool reported missing or insufficient symbol data. Do not tell the user to run an ingest command." + news_note
 
 
 def _remove_false_missing_data_warning(answer: str, trace: list[dict]) -> str:

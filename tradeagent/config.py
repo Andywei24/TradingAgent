@@ -44,6 +44,12 @@ class Settings(BaseSettings):
     # RAG
     embed_model: str = "BAAI/bge-small-en-v1.5"
 
+    # Tavily news/web search
+    tavily_api_key: str = ""
+    tavily_base_url: str = "https://api.tavily.com/search"
+    tavily_news_days: int = 7
+    tavily_max_results: int = 5
+
     # Misc
     log_level: str = "INFO"
 

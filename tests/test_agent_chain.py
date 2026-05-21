@@ -207,7 +207,20 @@ class FalseNoDataSynthFakeClient:
             return _mk_resp(
                 _mk_msg(
                     content=json.dumps(
-                        {"subgoals": [{"id": 1, "goal": "Get price history for GOOG", "tools": ["get_price_history"]}]}
+                        {
+                            "subgoals": [
+                                {
+                                    "id": 1,
+                                    "goal": "Check if GOOG is overbought",
+                                    "tools": ["search_market_news", "compute_indicator"],
+                                },
+                                {
+                                    "id": 2,
+                                    "goal": "Generate a 5-day forecast for GOOG",
+                                    "tools": ["get_price_history", "run_linear_forecast"],
+                                },
+                            ]
+                        }
                     )
                 )
             )
@@ -216,7 +229,20 @@ class FalseNoDataSynthFakeClient:
             has_tool_result = any(m.get("role") == "tool" for m in messages)
             if has_tool_result:
                 return _mk_resp(_mk_msg(content="Tool returned data for GOOG.", tool_calls=None))
-            if "RSI" in goal:
+            if "market news" in goal:
+                return _mk_resp(
+                    _mk_msg(
+                        content=None,
+                        tool_calls=[
+                            _mk_call(
+                                "c_news",
+                                "search_market_news",
+                                {"symbol": "GOOG", "query": "overbought forecast", "days": 7, "max_results": 5},
+                            )
+                        ],
+                    )
+                )
+            if "RSI" in goal or "overbought" in goal:
                 return _mk_resp(
                     _mk_msg(
                         content=None,
@@ -234,7 +260,7 @@ class FalseNoDataSynthFakeClient:
             )
         return _mk_resp(
             _mk_msg(
-                content="# Answer\nGOOG data is available.\n\n**No data for GOOG — run `tradeagent ingest GOOG`.**\n\nNot financial advice."
+                content="# Answer\nGOOG data and recent Reuters news are available.\n\n**No data for GOOG — run `tradeagent ingest GOOG`.**\n\nNot financial advice."
             )
         )
 
@@ -260,14 +286,37 @@ def test_single_requested_symbol_corrects_wrong_tool_symbol():
     assert "values" in entry["result_keys"]
 
 
-def test_overbought_run_injects_indicators_and_removes_false_no_data_warning():
+def test_overbought_run_injects_news_indicators_and_removes_false_no_data_warning(httpx_mock):
+    httpx_mock.add_response(
+        json={
+            "query": "GOOG stock market news overbought forecast",
+            "results": [
+                {
+                    "title": "Alphabet shares steady",
+                    "url": "https://www.reuters.com/markets/alphabet-shares",
+                    "content": "Alphabet shares were steady as investors assessed recent momentum.",
+                    "published_date": "2026-05-20",
+                    "score": 0.8,
+                }
+            ],
+        }
+    )
     _seed("GOOG", n=80)
     result = run_chain("Is GOOG overbought?", client=FalseNoDataSynthFakeClient())
 
+    assert any("search_market_news" in (sg.get("tools") or []) for sg in result.plan["subgoals"])
     assert any("compute_indicator" in (sg.get("tools") or []) for sg in result.plan["subgoals"])
+    assert any((sg.get("tools") or []) == ["search_market_news"] for sg in result.plan["subgoals"])
+    assert any(t.get("tool") == "search_market_news" for t in result.trace)
     assert any(t.get("tool") == "compute_indicator" for t in result.trace)
+    news_summary = next(
+        t["summary"] for t in result.trace if t.get("phase") == "subgoal_done" and "market news" in t.get("summary", "")
+    )
+    assert "Alphabet shares steady" in news_summary
+    assert "reuters.com" in news_summary
     assert "No data for GOOG" not in result.answer
     assert "tradeagent ingest GOOG" not in result.answer
+    assert "unavailable" not in result.answer.lower()
 
 
 def test_run_chain_generates_and_persists_chart():
