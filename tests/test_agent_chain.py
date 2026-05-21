@@ -195,6 +195,50 @@ class WrongSymbolIndicatorFakeClient:
         return _mk_resp(_mk_msg(content="# Answer\nGOOG indicators were computed.\n\nNot financial advice."))
 
 
+class FalseNoDataSynthFakeClient:
+    """Planner omits indicators, then synthesizer wrongly emits an ingest warning."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def chat(self, messages, tools=None, tool_choice="auto", temperature=0.0, response_format=None):
+        self.calls += 1
+        if response_format and response_format.get("type") == "json_object":
+            return _mk_resp(
+                _mk_msg(
+                    content=json.dumps(
+                        {"subgoals": [{"id": 1, "goal": "Get price history for GOOG", "tools": ["get_price_history"]}]}
+                    )
+                )
+            )
+        if tools:
+            goal = messages[0]["content"]
+            has_tool_result = any(m.get("role") == "tool" for m in messages)
+            if has_tool_result:
+                return _mk_resp(_mk_msg(content="Tool returned data for GOOG.", tool_calls=None))
+            if "RSI" in goal:
+                return _mk_resp(
+                    _mk_msg(
+                        content=None,
+                        tool_calls=[
+                            _mk_call(
+                                "c2",
+                                "compute_indicator",
+                                {"symbol": "GOOG", "indicator": "rsi_14", "interval": "1d", "last_n": 5},
+                            )
+                        ],
+                    )
+                )
+            return _mk_resp(
+                _mk_msg(content=None, tool_calls=[_mk_call("c1", "get_price_history", {"symbol": "GOOG", "last_n": 5})])
+            )
+        return _mk_resp(
+            _mk_msg(
+                content="# Answer\nGOOG data is available.\n\n**No data for GOOG — run `tradeagent ingest GOOG`.**\n\nNot financial advice."
+            )
+        )
+
+
 def test_missing_symbol_error_reaches_trace():
     # ZZZZ is never seeded; auto_ingest defaults off.
     result = run_chain("How is ZZZZ doing?", client=MissingSymbolFakeClient())
@@ -214,6 +258,16 @@ def test_single_requested_symbol_corrects_wrong_tool_symbol():
     assert args["symbol"] == "GOOG"
     assert entry["corrected_symbol_from"] == "AAPL"
     assert "values" in entry["result_keys"]
+
+
+def test_overbought_run_injects_indicators_and_removes_false_no_data_warning():
+    _seed("GOOG", n=80)
+    result = run_chain("Is GOOG overbought?", client=FalseNoDataSynthFakeClient())
+
+    assert any("compute_indicator" in (sg.get("tools") or []) for sg in result.plan["subgoals"])
+    assert any(t.get("tool") == "compute_indicator" for t in result.trace)
+    assert "No data for GOOG" not in result.answer
+    assert "tradeagent ingest GOOG" not in result.answer
 
 
 def test_run_chain_generates_and_persists_chart():

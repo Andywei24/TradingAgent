@@ -20,6 +20,7 @@ from tradeagent.data.models import agent_runs
 log = logging.getLogger(__name__)
 
 MAX_TOOL_ITERATIONS_PER_GOAL = 5
+MISSING_DATA_RESULT_KEYS = {"error", "missing_data", "insufficient_data", "fetch_failed"}
 SYMBOL_SCOPED_TOOLS = {
     "get_price_history",
     "compute_indicator",
@@ -91,6 +92,38 @@ def _apply_requested_symbol(raw_args: str, requested_symbol: str | None) -> tupl
         return raw_args, None
     args["symbol"] = requested_symbol
     return json.dumps(args), original
+
+
+def _needs_momentum_indicators(query: str) -> bool:
+    q = query.lower()
+    return "overbought" in q or "oversold" in q
+
+
+def _normalize_plan(query: str, plan: dict, requested_symbol: str | None) -> dict:
+    subgoals = plan.get("subgoals")
+    if not isinstance(subgoals, list):
+        return {"subgoals": [{"id": 1, "goal": query, "tools": list(REGISTRY)}]}
+
+    has_indicator_goal = any("compute_indicator" in (sg.get("tools") or []) for sg in subgoals if isinstance(sg, dict))
+    if _needs_momentum_indicators(query) and requested_symbol and not has_indicator_goal:
+        indicator_goal = {
+            "goal": f"Compute RSI(14) and MACD histogram for {requested_symbol} to assess overbought or oversold momentum",
+            "tools": ["compute_indicator"],
+        }
+        insert_at = next(
+            (
+                i
+                for i, sg in enumerate(subgoals)
+                if isinstance(sg, dict) and "run_linear_forecast" in (sg.get("tools") or [])
+            ),
+            len(subgoals),
+        )
+        subgoals.insert(insert_at, indicator_goal)
+
+    for i, sg in enumerate(subgoals, start=1):
+        if isinstance(sg, dict):
+            sg["id"] = i
+    return {"subgoals": subgoals}
 
 
 def _dispatch_tool_calls(
@@ -197,22 +230,51 @@ def _synthesize(
     user_query: str,
     plan: dict,
     subgoal_summaries: list[str],
+    trace: list[dict],
 ) -> str:
     context_blob = "\n\n".join(
         f"### Sub-goal {i+1}: {sg.get('goal')}\n{summary}"
         for i, (sg, summary) in enumerate(zip(plan.get("subgoals", []), subgoal_summaries))
     )
+    availability = _data_availability_note(trace)
     resp = client.chat(
         messages=[
             {"role": "system", "content": SYNTHESIZER_SYSTEM},
             {
                 "role": "user",
-                "content": f"User question:\n{user_query}\n\nEvidence:\n{context_blob}",
+                "content": f"User question:\n{user_query}\n\nData availability:\n{availability}\n\nEvidence:\n{context_blob}",
             },
         ],
         temperature=0.2,
     )
     return resp.choices[0].message.content or ""
+
+
+def _trace_has_missing_data(trace: list[dict]) -> bool:
+    for entry in trace:
+        if not isinstance(entry, dict) or "tool" not in entry:
+            continue
+        keys = set(entry.get("result_keys") or [])
+        if keys & MISSING_DATA_RESULT_KEYS:
+            return True
+    return False
+
+
+def _data_availability_note(trace: list[dict]) -> str:
+    if _trace_has_missing_data(trace):
+        return "One or more tools reported missing/insufficient data. Only mention ingestion for those specific symbols."
+    return "No tool reported missing or insufficient symbol data. Do not tell the user to run an ingest command."
+
+
+def _remove_false_missing_data_warning(answer: str, trace: list[dict]) -> str:
+    if _trace_has_missing_data(trace):
+        return answer
+    lines = [
+        line
+        for line in answer.splitlines()
+        if not ("No data for " in line and "tradeagent ingest" in line)
+    ]
+    return "\n".join(lines).strip()
 
 
 def run_chain(
@@ -228,7 +290,7 @@ def run_chain(
     token = auto_ingest_var.set(auto_ingest)
     try:
         requested_symbol = _requested_symbol(query)
-        plan = _plan(client, query)
+        plan = _normalize_plan(query, _plan(client, query), requested_symbol)
         trace.append({"phase": "plan", "plan": plan})
 
         summaries: list[str] = []
@@ -239,7 +301,8 @@ def run_chain(
             summaries.append(summary)
             trace.append({"phase": "subgoal_done", "id": sg.get("id"), "summary": summary})
 
-        answer = _synthesize(client, query, plan, summaries)
+        answer = _synthesize(client, query, plan, summaries, trace)
+        answer = _remove_false_missing_data_warning(answer, trace)
         trace.append({"phase": "synth"})
     finally:
         auto_ingest_var.reset(token)
