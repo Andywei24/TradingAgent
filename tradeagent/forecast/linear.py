@@ -67,14 +67,20 @@ def forecast(
 ) -> Forecast:
     df = get_bars(symbol, interval=interval)
     if df.empty or len(df) < 80:
-        raise ValueError(f"Not enough data for {symbol} (rows={len(df)}); need >= 80")
+        raise ValueError(
+            f"Only {len(df)} bars for {symbol}; need >= 80. Ingest more history "
+            f"(`tradeagent ingest {symbol}`); a premium Alpha Vantage key unlocks full history."
+        )
 
     feats = _build_features(df)
     y = df["close"].pct_change(horizon_days).shift(-horizon_days)
     data = feats.join(y.rename("target")).dropna()
 
     if len(data) < 60:
-        raise ValueError(f"Insufficient feature rows for {symbol}: {len(data)}")
+        raise ValueError(
+            f"Insufficient feature rows for {symbol}: {len(data)} (need >= 60). "
+            f"Ingest more history; a premium Alpha Vantage key unlocks full history."
+        )
 
     X = data.drop(columns=["target"]).astype(float)
     y_clean = data["target"].astype(float)

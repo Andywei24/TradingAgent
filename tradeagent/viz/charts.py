@@ -62,13 +62,27 @@ def plot_price_with_indicators(
     return path
 
 
-def plot_forecast(symbol: str, forecast, last_n: int = 60, out_dir: Path | None = None) -> Path:
+def plot_forecast(
+    symbol: str,
+    forecast,
+    last_n: int = 90,
+    indicators: list[str] | None = None,
+    out_dir: Path | None = None,
+) -> Path:
+    """Combined chart: recent close + moving-average overlays + forecast point/band."""
+    indicators = indicators if indicators is not None else ["sma_20", "sma_50"]
     df = get_bars(symbol).tail(last_n)
     if df.empty:
         raise ValueError(f"no bars for {symbol}")
 
     fig, ax = plt.subplots(figsize=(10, 5))
-    ax.plot(df.index, df["close"], label="close")
+    ax.plot(df.index, df["close"], label="close", linewidth=1.5)
+    for name in indicators:
+        series = _resolve_indicator(symbol, name, df).tail(last_n)
+        if series.empty:
+            continue
+        ax.plot(series.index, series.values, label=name, alpha=0.8)
+
     # forecast point as a marker after the last date (offset by horizon)
     horizon = forecast.horizon_days
     last_ts = df.index[-1]
@@ -86,6 +100,8 @@ def plot_forecast(symbol: str, forecast, last_n: int = 60, out_dir: Path | None 
         f"{symbol} — {horizon}d forecast: {forecast.direction} "
         f"(R²_wf={forecast.r2_walkforward:.2f})"
     )
+    ax.set_xlabel("date")
+    ax.set_ylabel("price")
     ax.legend(loc="best")
     ax.grid(alpha=0.3)
     fig.autofmt_xdate()

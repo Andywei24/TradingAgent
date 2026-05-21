@@ -15,6 +15,11 @@ def isolated_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("RAG_INDEX_DIR", str(tmp_path / "faiss_index"))
     monkeypatch.setenv("ALPHAVANTAGE_API_KEY", "test-key")
     monkeypatch.setenv("ALPHAVANTAGE_RATE_LIMIT_PER_MIN", "60")
+    monkeypatch.setenv("ALPHAVANTAGE_PREMIUM", "false")
+    # Pin LLM settings so tests don't depend on the developer's real .env.
+    monkeypatch.setenv("LLM_PROVIDER", "deepseek")
+    monkeypatch.setenv("DEEPSEEK_MODEL", "deepseek-chat")
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-4o-mini")
 
     from tradeagent import config
     from tradeagent.data import db as db_mod

@@ -29,9 +29,21 @@ def get_engine() -> Engine:
     return engine
 
 
+def _migrate_sqlite(engine: Engine) -> None:
+    """Lightweight additive migrations. create_all() never alters existing tables, so
+    add columns introduced after a DB was first created."""
+    if engine.url.get_backend_name() != "sqlite":
+        return
+    with engine.begin() as conn:
+        cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(agent_runs)")}
+        if cols and "artifacts" not in cols:
+            conn.exec_driver_sql("ALTER TABLE agent_runs ADD COLUMN artifacts TEXT")
+
+
 def init_db(engine: Engine | None = None) -> None:
     engine = engine or get_engine()
     metadata.create_all(engine)
+    _migrate_sqlite(engine)
 
 
 @contextmanager

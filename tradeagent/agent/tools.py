@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import logging
+from contextvars import ContextVar
 from dataclasses import asdict
 from datetime import datetime
 from typing import Any, Callable
@@ -11,12 +13,58 @@ from pydantic import BaseModel, Field
 from tradeagent.data.queries import (
     get_bars,
     get_feature,
+    latest_bar_ts,
     list_symbols,
     summarize_statistics,
 )
 from tradeagent.forecast.indicators import CORE_FEATURES
 from tradeagent.forecast.linear import forecast as run_forecast
 from tradeagent.forecast.signals import decompose
+
+log = logging.getLogger(__name__)
+
+# Request-scoped: when True, symbol-scoped tools auto-ingest a missing symbol instead
+# of failing. Set by run_chain so the tool functions themselves stay stateless.
+auto_ingest_var: ContextVar[bool] = ContextVar("auto_ingest", default=False)
+
+
+def _ensure_symbol_data(symbol: str, interval: str = "1d") -> dict | None:
+    """Guard against operating on a symbol that has no bars in the local store.
+
+    Returns None when data is present (proceed). Otherwise returns an error dict the
+    tool should hand straight back to the model — either a clear "run ingest" hint, or,
+    when auto-ingest is enabled, the result of a best-effort on-the-fly fetch.
+    """
+    if latest_bar_ts(symbol, interval) is not None:
+        return None
+
+    if auto_ingest_var.get():
+        from tradeagent.data.features import materialize_features
+        from tradeagent.data.ingest import ingest_symbol
+
+        try:
+            n = ingest_symbol(symbol, interval=interval)
+        except Exception as e:  # throttle / premium / network
+            log.warning("auto-ingest failed for %s: %s", symbol, e)
+            return {
+                "error": f"Auto-ingest failed for {symbol}: {type(e).__name__}: {e}",
+                "fetch_failed": True,
+            }
+        if n == 0 or latest_bar_ts(symbol, interval) is None:
+            return {
+                "error": f"No data returned for {symbol} from the data provider.",
+                "fetch_failed": True,
+            }
+        try:
+            materialize_features(symbol, interval=interval)
+        except Exception as e:  # features are best-effort; bars are enough to proceed
+            log.warning("feature build failed for %s after auto-ingest: %s", symbol, e)
+        return None
+
+    return {
+        "error": f"No data for {symbol} in the local store. Run: tradeagent ingest {symbol}",
+        "missing_data": True,
+    }
 
 
 # --------- input schemas ---------
@@ -82,6 +130,9 @@ def _slice_last_n(df: pd.DataFrame, n: int | None) -> pd.DataFrame:
 
 
 def _tool_get_price_history(inp: GetPriceHistoryInput) -> dict:
+    guard = _ensure_symbol_data(inp.symbol, inp.interval)
+    if guard is not None:
+        return guard
     start = datetime.fromisoformat(inp.start) if inp.start else None
     end = datetime.fromisoformat(inp.end) if inp.end else None
     df = get_bars(inp.symbol, interval=inp.interval, start=start, end=end)
@@ -96,6 +147,9 @@ def _tool_get_price_history(inp: GetPriceHistoryInput) -> dict:
 def _tool_compute_indicator(inp: ComputeIndicatorInput) -> dict:
     if inp.indicator not in CORE_FEATURES:
         return {"error": f"unknown indicator '{inp.indicator}'", "available": list(CORE_FEATURES)}
+    guard = _ensure_symbol_data(inp.symbol, inp.interval)
+    if guard is not None:
+        return guard
     # Try cached features first; fall back to live compute.
     series = get_feature(inp.symbol, inp.indicator, interval=inp.interval)
     if series.empty:
@@ -117,11 +171,32 @@ def _tool_compute_indicator(inp: ComputeIndicatorInput) -> dict:
 
 
 def _tool_run_linear_forecast(inp: RunLinearForecastInput) -> dict:
-    fc = run_forecast(inp.symbol, horizon_days=inp.horizon_days, interval=inp.interval)
-    return asdict(fc)
+    guard = _ensure_symbol_data(inp.symbol, inp.interval)
+    if guard is not None:
+        return guard
+    try:
+        fc = run_forecast(inp.symbol, horizon_days=inp.horizon_days, interval=inp.interval)
+    except ValueError as e:  # symbol exists but not enough history
+        return {"error": str(e), "insufficient_data": True}
+    result = asdict(fc)
+    # Visualize the forecast right after running it; a plotting failure must not break
+    # the forecast itself.
+    try:
+        from tradeagent.viz.charts import plot_forecast
+
+        path = plot_forecast(inp.symbol, fc)
+        result["chart_path"] = str(path)
+    except Exception as e:  # pragma: no cover - defensive
+        import logging
+
+        logging.getLogger(__name__).warning("forecast chart failed for %s: %s", inp.symbol, e)
+    return result
 
 
 def _tool_decompose_signal(inp: DecomposeSignalInput) -> dict:
+    guard = _ensure_symbol_data(inp.symbol, inp.interval)
+    if guard is not None:
+        return guard
     df = get_bars(inp.symbol, interval=inp.interval)
     if df.empty:
         return {"error": f"no bars for {inp.symbol}"}
@@ -147,6 +222,9 @@ def _tool_retrieve_knowledge(inp: RetrieveKnowledgeInput) -> dict:
 
 
 def _tool_plot_chart(inp: PlotChartInput) -> dict:
+    guard = _ensure_symbol_data(inp.symbol)
+    if guard is not None:
+        return guard
     from tradeagent.viz.charts import plot_price_with_indicators
 
     path = plot_price_with_indicators(inp.symbol, indicators=inp.indicators, last_n=inp.last_n)
@@ -154,6 +232,9 @@ def _tool_plot_chart(inp: PlotChartInput) -> dict:
 
 
 def _tool_summarize_statistics(inp: SummarizeStatisticsInput) -> dict:
+    guard = _ensure_symbol_data(inp.symbol, inp.interval)
+    if guard is not None:
+        return guard
     return summarize_statistics(inp.symbol, interval=inp.interval, window_days=inp.window_days)
 
 

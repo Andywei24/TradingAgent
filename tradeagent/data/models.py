@@ -77,6 +77,7 @@ agent_runs = Table(
     Column("user_query", Text),
     Column("final_answer", Text),
     Column("tool_trace", Text),
+    Column("artifacts", Text),
 )
 
 data_ingest_log = Table(

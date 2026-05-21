@@ -91,13 +91,29 @@ def rag_index(
 
 
 @app.command("ask")
-def ask(query: str = typer.Argument(...)) -> None:
+def ask(
+    query: str = typer.Argument(...),
+    provider: str | None = typer.Option(
+        None, "--provider", "-p", help="LLM provider: deepseek | openai (default: LLM_PROVIDER)"
+    ),
+    auto_ingest: bool = typer.Option(
+        False,
+        "--auto-ingest",
+        "-A",
+        help="Fetch any missing symbol on the fly (spends Alpha Vantage quota: 25/day, 5/min).",
+    ),
+) -> None:
     """Run the reasoning agent on a natural-language query."""
     from tradeagent.agent.chain import run_chain
+    from tradeagent.viz.report import build_report
 
-    result = run_chain(query)
+    result = run_chain(query, provider=provider, auto_ingest=auto_ingest)
     typer.echo(result.answer)
-    typer.echo(f"\n[run_id={result.run_id}] traces saved.")
+    report_path = build_report(result.run_id)
+    typer.echo(
+        f"\n[run_id={result.run_id}] {len(result.charts)} chart(s) generated. "
+        f"Report: {report_path}"
+    )
 
 
 @app.command("report")

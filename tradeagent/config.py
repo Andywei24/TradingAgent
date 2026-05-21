@@ -15,16 +15,26 @@ class Settings(BaseSettings):
         case_sensitive=False,
     )
 
-    # LLM
+    # LLM — pick the active provider; both speak the OpenAI chat-completions protocol.
+    llm_provider: str = "deepseek"  # deepseek | openai
+
     deepseek_api_key: str = ""
     deepseek_base_url: str = "https://api.deepseek.com"
     deepseek_model: str = "deepseek-chat"
+
+    openai_api_key: str = ""
+    openai_base_url: str = "https://api.openai.com/v1"
+    openai_model: str = "gpt-4o-mini"
 
     # Alpha Vantage
     alphavantage_api_key: str = ""
     alphavantage_base_url: str = "https://www.alphavantage.co/query"
     alphavantage_rate_limit_per_min: int = 5
     alphavantage_default_exchange: str = "NASDAQ"
+    # The free tier blocks several features: adjusted closes (TIME_SERIES_DAILY_ADJUSTED)
+    # and outputsize=full. Leave False on a free key — we then use TIME_SERIES_DAILY with
+    # outputsize=compact (latest ~100 bars, adj_close == close). Set True with a premium key.
+    alphavantage_premium: bool = False
 
     # Storage
     db_url: str = "sqlite:///data/market.db"

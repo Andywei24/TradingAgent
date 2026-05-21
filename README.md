@@ -1,6 +1,6 @@
 # TradingAgent
 
-A reasoning trading-research agent over a SQL market-data store, with Alpha Vantage ingest, linear forecasting, signal decomposition, and a financial-knowledge RAG. The LLM brain is Deepseek-V3 via its OpenAI-compatible API.
+A reasoning trading-research agent over a SQL market-data store, with Alpha Vantage ingest, linear forecasting, signal decomposition, and a financial-knowledge RAG. The LLM brain is pluggable — **Deepseek-V3 or OpenAI** out of the box, both via the OpenAI-compatible chat-completions protocol.
 
 See `docs/PLAN.md` for the full architecture and rationale.
 
@@ -15,7 +15,8 @@ pip install -e .
 
 # 2. Configure
 Copy-Item .env.example .env
-# Edit .env: set DEEPSEEK_API_KEY and ALPHAVANTAGE_API_KEY
+# Edit .env: set ALPHAVANTAGE_API_KEY, pick LLM_PROVIDER (deepseek|openai),
+# and set the matching key (DEEPSEEK_API_KEY or OPENAI_API_KEY)
 
 # 3. Ingest NASDAQ price history (free tier: 5 req/min, 25/day — pin to a small list)
 tradeagent ingest AAPL MSFT NVDA --interval 1d
@@ -27,8 +28,9 @@ tradeagent features build
 #    (drop PDFs / .md / .html under data/knowledge_base/ first)
 tradeagent rag index data/knowledge_base
 
-# 6. Ask
+# 6. Ask (uses LLM_PROVIDER from .env; override per-call with --provider)
 tradeagent ask "Is NVDA overbought right now, and what's a sensible 5-day forecast?"
+tradeagent ask "Compare AAPL vs MSFT momentum" --provider openai
 
 # 7. Rebuild a markdown report from a prior run
 tradeagent report 1
@@ -56,7 +58,19 @@ pytest
 
 The test suite uses an isolated temp SQLite per test (see `tests/conftest.py`) and mocks Alpha Vantage / Deepseek so it runs offline.
 
+## LLM providers
+
+The agent talks to any OpenAI-compatible chat-completions endpoint. Two providers ship configured:
+
+| Provider | Env key | Default model | Base URL |
+|---|---|---|---|
+| `deepseek` (default) | `DEEPSEEK_API_KEY` | `deepseek-chat` | `https://api.deepseek.com` |
+| `openai` | `OPENAI_API_KEY` | `gpt-4o-mini` | `https://api.openai.com/v1` |
+
+Set the default with `LLM_PROVIDER` in `.env`, or override per call with `tradeagent ask "..." --provider openai`. Programmatically: `run_chain(query, provider="openai")` or `make_llm_client("openai", model="gpt-4o")`. Add a third provider by extending `_provider_config` in `tradeagent/agent/llm.py`.
+
 ## Notes
 
-- **Alpha Vantage free tier**: 25 req/day, 5/min. The ingest client rate-limits and backs off on `Note`/`Information` throttle responses. For broader universes, get a premium key or swap in a Polygon/Tiingo `MarketDataClient`.
+- **Alpha Vantage free tier**: 25 req/day, 5/min. Several features are premium-gated — adjusted closes (`TIME_SERIES_DAILY_ADJUSTED`) and `outputsize=full`. The client defaults to the free `TIME_SERIES_DAILY` + `outputsize=compact` (latest ~100 daily bars; `adj_close == close`) and **fails fast** on a premium message instead of retrying it as a throttle. With a premium key, set `ALPHAVANTAGE_PREMIUM=true` to unlock adjusted closes and full history. For broader universes, get a premium key or swap in a Polygon/Tiingo `MarketDataClient`.
+  - 100 bars is enough to run the forecaster, but walk-forward R² will often be low/negative on so short a window — that's an honest "low confidence" signal, not a bug. Premium full history sharpens it.
 - **No financial advice**: the agent appends a disclaimer; forecasts surface walk-forward R² as a confidence anchor — treat them as research signals, not recommendations.

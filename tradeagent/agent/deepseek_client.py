@@ -1,39 +1,23 @@
 from __future__ import annotations
 
-from typing import Any
-
 from openai import OpenAI
 
-from tradeagent.config import get_settings
+from tradeagent.agent.llm import LLMClient, make_llm_client
 
 
-class DeepseekClient:
-    """Thin wrapper over the OpenAI-compatible Deepseek chat-completions API."""
+class DeepseekClient(LLMClient):
+    """Backwards-compatible Deepseek client.
+
+    Kept so existing imports keep working; prefer ``make_llm_client(provider)`` for
+    multi-provider support.
+    """
 
     def __init__(self, client: OpenAI | None = None):
-        settings = get_settings()
-        self.model = settings.deepseek_model
-        self.client = client or OpenAI(
-            api_key=settings.deepseek_api_key or "missing",
-            base_url=settings.deepseek_base_url,
+        base = make_llm_client("deepseek", client=client)
+        super().__init__(
+            api_key="",
+            base_url=None,
+            model=base.model,
+            provider="deepseek",
+            client=base.client,
         )
-
-    def chat(
-        self,
-        messages: list[dict],
-        tools: list[dict] | None = None,
-        tool_choice: str | dict = "auto",
-        temperature: float = 0.0,
-        response_format: dict | None = None,
-    ) -> Any:
-        kwargs: dict = {
-            "model": self.model,
-            "messages": messages,
-            "temperature": temperature,
-        }
-        if tools:
-            kwargs["tools"] = tools
-            kwargs["tool_choice"] = tool_choice
-        if response_format:
-            kwargs["response_format"] = response_format
-        return self.client.chat.completions.create(**kwargs)

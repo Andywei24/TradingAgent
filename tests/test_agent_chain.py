@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
+
+import numpy as np
 
 from tradeagent.agent.chain import run_chain
 from tradeagent.data.queries import upsert_bars, upsert_instruments
+from tradeagent.viz.report import build_report
 
 
 def _seed(symbol: str = "AAPL", n: int = 60) -> None:
@@ -82,3 +86,158 @@ def test_run_chain_end_to_end_mocked():
     assert result.run_id >= 1
     assert "Not financial advice" in result.answer
     assert any(t.get("tool") == "get_price_history" for t in result.trace)
+
+
+def _seed_long(symbol: str = "AAPL", n: int = 250) -> None:
+    upsert_instruments([{"symbol": symbol, "name": symbol, "exchange": "NASDAQ", "asset_type": "equity", "currency": "USD"}])
+    rng = np.random.default_rng(3)
+    prices = 100 + rng.standard_normal(n).cumsum() * 0.5
+    base = datetime(2024, 1, 1)
+    rows = []
+    for i in range(n):
+        p = float(prices[i])
+        rows.append(
+            {
+                "symbol": symbol,
+                "ts": base + timedelta(days=i),
+                "interval": "1d",
+                "open": p,
+                "high": p + 0.5,
+                "low": p - 0.5,
+                "close": p,
+                "adj_close": p,
+                "volume": 1_000_000.0,
+            }
+        )
+    upsert_bars(rows)
+
+
+class ForecastFakeClient:
+    """Scripted client that drives a run_linear_forecast subgoal (which renders a chart)."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def chat(self, messages, tools=None, tool_choice="auto", temperature=0.0, response_format=None):
+        self.calls += 1
+        if response_format and response_format.get("type") == "json_object":
+            return _mk_resp(
+                _mk_msg(
+                    content=json.dumps(
+                        {"subgoals": [{"id": 1, "goal": "forecast AAPL", "tools": ["run_linear_forecast"]}]}
+                    )
+                )
+            )
+        if tools and self.calls == 2:
+            return _mk_resp(
+                _mk_msg(
+                    content=None,
+                    tool_calls=[_mk_call("c1", "run_linear_forecast", {"symbol": "AAPL", "horizon_days": 5})],
+                )
+            )
+        if tools:
+            return _mk_resp(_mk_msg(content="Forecast computed.", tool_calls=None))
+        return _mk_resp(_mk_msg(content="# Answer\nSee the forecast chart below.\n\nNot financial advice."))
+
+
+class MissingSymbolFakeClient:
+    """Planner -> get_price_history on an un-ingested symbol -> summary -> synth."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def chat(self, messages, tools=None, tool_choice="auto", temperature=0.0, response_format=None):
+        self.calls += 1
+        if response_format and response_format.get("type") == "json_object":
+            return _mk_resp(
+                _mk_msg(content=json.dumps({"subgoals": [{"id": 1, "goal": "prices", "tools": ["get_price_history"]}]}))
+            )
+        if tools and self.calls == 2:
+            return _mk_resp(
+                _mk_msg(content=None, tool_calls=[_mk_call("c1", "get_price_history", {"symbol": "ZZZZ"})])
+            )
+        if tools:
+            return _mk_resp(_mk_msg(content="No data available for ZZZZ.", tool_calls=None))
+        return _mk_resp(_mk_msg(content="No data for ZZZZ. Run `tradeagent ingest ZZZZ`.\n\nNot financial advice."))
+
+
+class WrongSymbolIndicatorFakeClient:
+    """Simulates an LLM drifting from GOOG in the user query to AAPL in a tool call."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def chat(self, messages, tools=None, tool_choice="auto", temperature=0.0, response_format=None):
+        self.calls += 1
+        if response_format and response_format.get("type") == "json_object":
+            return _mk_resp(
+                _mk_msg(
+                    content=json.dumps(
+                        {"subgoals": [{"id": 1, "goal": "Compute indicators for GOOG", "tools": ["compute_indicator"]}]}
+                    )
+                )
+            )
+        if tools and self.calls == 2:
+            return _mk_resp(
+                _mk_msg(
+                    content=None,
+                    tool_calls=[
+                        _mk_call(
+                            "c1",
+                            "compute_indicator",
+                            {"symbol": "AAPL", "indicator": "rsi_14", "interval": "1d", "last_n": 5},
+                        )
+                    ],
+                )
+            )
+        if tools:
+            return _mk_resp(_mk_msg(content="RSI computed for GOOG.", tool_calls=None))
+        return _mk_resp(_mk_msg(content="# Answer\nGOOG indicators were computed.\n\nNot financial advice."))
+
+
+def test_missing_symbol_error_reaches_trace():
+    # ZZZZ is never seeded; auto_ingest defaults off.
+    result = run_chain("How is ZZZZ doing?", client=MissingSymbolFakeClient())
+    tool_entries = [t for t in result.trace if t.get("tool") == "get_price_history"]
+    assert tool_entries and "error" in (tool_entries[0]["result_keys"] or [])
+    assert not result.charts
+
+
+def test_single_requested_symbol_corrects_wrong_tool_symbol():
+    _seed("GOOG", n=80)
+    result = run_chain("Is GOOG overbought?", client=WrongSymbolIndicatorFakeClient())
+
+    tool_entries = [t for t in result.trace if t.get("tool") == "compute_indicator"]
+    assert tool_entries
+    entry = tool_entries[0]
+    args = json.loads(entry["args"])
+    assert args["symbol"] == "GOOG"
+    assert entry["corrected_symbol_from"] == "AAPL"
+    assert "values" in entry["result_keys"]
+
+
+def test_run_chain_generates_and_persists_chart():
+    _seed_long()
+    result = run_chain("Forecast AAPL 5 days", client=ForecastFakeClient())
+
+    # chart captured on the RunResult and the PNG actually exists
+    assert result.charts, "expected at least one chart"
+    assert Path(result.charts[0]).exists()
+    # trace entry for the forecast tool carries the chart path
+    assert any(t.get("chart_path") for t in result.trace)
+
+    # persisted to agent_runs.artifacts
+    from sqlalchemy import select
+
+    from tradeagent.data.db import connect
+    from tradeagent.data.models import agent_runs
+
+    with connect() as conn:
+        row = conn.execute(select(agent_runs).where(agent_runs.c.id == result.run_id)).mappings().one()
+    assert json.loads(row["artifacts"])
+
+    # report embeds it under a Charts section with a relative image link
+    path = build_report(result.run_id)
+    md = path.read_text(encoding="utf-8")
+    assert "## Charts" in md
+    assert "![" in md and "charts/" in md and ".png)" in md

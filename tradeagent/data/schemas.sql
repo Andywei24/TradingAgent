@@ -47,7 +47,8 @@ CREATE TABLE IF NOT EXISTS agent_runs (
     started_at   TIMESTAMP,
     user_query   TEXT,
     final_answer TEXT,
-    tool_trace   TEXT
+    tool_trace   TEXT,
+    artifacts    TEXT
 );
 
 CREATE TABLE IF NOT EXISTS data_ingest_log (

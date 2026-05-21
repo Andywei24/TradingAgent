@@ -30,7 +30,11 @@ log = logging.getLogger(__name__)
 
 
 class AlphaVantageThrottled(RuntimeError):
-    """Raised when Alpha Vantage returns a Note/Information throttle response."""
+    """Raised when Alpha Vantage returns a Note/Information rate-limit response (retryable)."""
+
+
+class AlphaVantagePremiumEndpoint(RuntimeError):
+    """Raised when an endpoint requires a premium subscription (NOT retryable)."""
 
 
 class MarketDataClient(ABC):
@@ -106,8 +110,13 @@ class AlphaVantageClient(MarketDataClient):
             with attempt:
                 resp = self._get(params)
                 data = resp.json()
-                if "Note" in data or "Information" in data:
-                    note = data.get("Note") or data.get("Information")
+                note = data.get("Note") or data.get("Information")
+                if note:
+                    # "premium endpoint" / "premium API function" => won't ever succeed
+                    # on a free key, so fail fast instead of burning retries.
+                    if "premium" in note.lower():
+                        log.error("Alpha Vantage premium-only endpoint: %s", note)
+                        raise AlphaVantagePremiumEndpoint(note)
                     log.warning("Alpha Vantage throttle: %s", note)
                     raise AlphaVantageThrottled(note)
                 if "Error Message" in data:
@@ -117,10 +126,14 @@ class AlphaVantageClient(MarketDataClient):
 
     # ----- public -----
     def fetch_daily(self, symbol: str, full: bool = False) -> pd.DataFrame:
+        # On the free tier, both DAILY_ADJUSTED and outputsize=full are premium-gated.
+        premium = self.settings.alphavantage_premium
+        function = "TIME_SERIES_DAILY_ADJUSTED" if premium else "TIME_SERIES_DAILY"
+        outputsize = "full" if (full and premium) else "compact"
         params = {
-            "function": "TIME_SERIES_DAILY_ADJUSTED",
+            "function": function,
             "symbol": symbol,
-            "outputsize": "full" if full else "compact",
+            "outputsize": outputsize,
             "datatype": "json",
         }
         data = self._get_json(params)
@@ -137,7 +150,7 @@ class AlphaVantageClient(MarketDataClient):
             "function": "TIME_SERIES_INTRADAY",
             "symbol": symbol,
             "interval": interval,
-            "outputsize": "full",
+            "outputsize": "full" if self.settings.alphavantage_premium else "compact",
             "datatype": "json",
         }
         data = self._get_json(params)
@@ -273,7 +286,13 @@ def ingest_many(symbols: Iterable[str], interval: str = "1d", full: bool = False
             n = ingest_symbol(sym, interval=interval, full=full, client=client)
             out[sym] = n
             log.info("ingested %s: %d new bars", sym, n)
-        except (RetryError, AlphaVantageThrottled, httpx.HTTPError, ValueError) as e:
+        except (
+            RetryError,
+            AlphaVantageThrottled,
+            AlphaVantagePremiumEndpoint,
+            httpx.HTTPError,
+            ValueError,
+        ) as e:
             log.error("ingest failed for %s: %s", sym, e)
             out[sym] = 0
     return out
