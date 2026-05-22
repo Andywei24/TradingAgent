@@ -65,7 +65,7 @@ The 5-day forecast produced:
 
 The low and negative R2 values are surfaced directly in the report so the forecast is treated as a weak research signal rather than a confident prediction.
 
-![GOOG 5-day forecast](data/reports/charts/GOOG_forecast_20260521_192954.png)
+![GOOG 5-day forecast](docs/GOOG_forecast_20260521_192954.png)
 
 The report also preserves the structured trace, including calls to `compute_indicator`, `get_price_history`, `run_linear_forecast`, and `search_market_news`, so each final answer can be audited back to the tools and evidence used.
 
