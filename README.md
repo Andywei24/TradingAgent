@@ -38,6 +38,37 @@ tradeagent ask "Compare AAPL vs MSFT momentum" --provider openai
 tradeagent report 1
 ```
 
+## Example run
+
+The repository includes a generated report at `data/reports/run_9.md` that demonstrates the full agent loop on this question:
+
+> Is GOOG overbought right now, and what's a sensible 5-day forecast?
+
+For that run, the agent planned three subgoals:
+
+1. Check overbought conditions with technical indicators.
+2. Generate a 5-day forecast from local price history.
+3. Search recent market news for context.
+
+The resulting answer concluded that GOOG was **not overbought**: the latest RSI(14) was about **62.29**, below the common 70 overbought threshold. The latest SMA(20) was about **378.15**.
+
+The 5-day forecast produced:
+
+| Metric | Value |
+|---|---:|
+| Last close | `$384.90` |
+| Forecast point | `$378.78` |
+| Forecast interval | `$341.61` to `$415.96` |
+| Direction | `down` |
+| In-sample R2 | `0.044` |
+| Walk-forward R2 | `-3.034` |
+
+The low and negative R2 values are surfaced directly in the report so the forecast is treated as a weak research signal rather than a confident prediction.
+
+![GOOG 5-day forecast](data/reports/charts/GOOG_forecast_20260521_192954.png)
+
+The report also preserves the structured trace, including calls to `compute_indicator`, `get_price_history`, `run_linear_forecast`, and `search_market_news`, so each final answer can be audited back to the tools and evidence used.
+
 ## Layout
 
 ```
